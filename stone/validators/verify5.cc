@@ -215,56 +215,12 @@ struct Head {
     }
 };
 
-int score(const Grid& grid, const Position& pos, const Position &goal) {
-    return -(pos.level + score_num * (abs(goal.x - pos.x) + abs(goal.y - pos.y)) / score_den);
-}
-
-string path(const vector<Position>& positions, unsigned int start) {
-    string result;
-    for (auto cur = start; !(cur == 0 && positions[cur].prev == 0); cur = positions[cur].prev) {
-        result = directions[positions[cur].direction].name + " "s + result;
-    }
-    trim_back(result);
-    return result;
-}
-
 const Grid& get_grid(vector<Grid>& grid_cache, unsigned int level, const vector<int>& yrange) {
     while (grid_cache.size() < level + 1) {
         grid_cache.push_back(iter_grid(*grid_cache.rbegin(), yrange));
     }
     return grid_cache[level];
 }
-
-struct BackTrie {
-    BackTrie(Position start) : positions{start}, left(0), next(0) {}
-
-    void pop(int pos) {
-        left++;
-        int parent = positions[pos].prev;
-        positions[parent].children--;
-        positions[pos].prev = next;
-        next = pos;
-        if (positions[parent].children == 0) {
-            pop(parent);
-        }
-    }
-
-    unsigned int push(Position value) {
-        if (left) {
-            left--;
-            int cur = next;
-            next = positions[cur].prev;
-            positions[cur] = value;
-            return cur;
-        } else {
-            positions.push_back(value);
-            return positions.size() - 1;
-        }
-    }
-
-    vector<Position> positions;
-    int left, next;
-};
 
 struct VisitedPosition {
     int y : 12;
@@ -275,78 +231,6 @@ struct VisitedPosition {
         return tie(y, x, level) < tie(other.y, other.x, other.level);
     }
 };
-
-struct VisitedQuads {
-    VisitedQuads() {}
-    
-    void set(int j, int i, int layer) {
-        auto key = VisitedPosition{j >> 6, i >> 6, layer};
-        auto it = visited.find(key);
-        if (it == visited.end()) {
-            auto it_pair = visited.emplace(key, vector<bool>(64 * 64, false));
-            it = it_pair.first;
-        }
-        it->second[(j & 0x3F) * 64 + (i & 0x3F)] = true;
-    }
-
-    bool check(int j, int i, int layer) {
-        auto key = VisitedPosition{j >> 6, i >> 6, layer};
-        auto it = visited.find(key);
-        if (it == visited.end()) {
-            return false;
-        }
-        return it->second[(j & 0x3F) * 64 + (i & 0x3F)];
-    }
-
-    map<VisitedPosition, vector<bool>> visited;
-};
-string search(const Grid& grid) {
-    BackTrie trie{grid.start};
-    priority_queue<Head> next;
-
-    vector<Grid> grid_cache{grid};
-    VisitedQuads visited;
-    visited.set(grid.start.y, grid.start.x, 0);
-    next.push({score(grid, grid.start, grid.end), 0});
-    vector<int> yrange(grid.sy - 2);
-    iota(yrange.begin(), yrange.end(), 1);
-    int steps = 0;
-    while (!next.empty()) {
-        Head current = next.top();
-        next.pop();
-        auto pos = trie.positions[current.position];
-        if (pos.same(grid.end)) {
-            cerr << pos.level << endl;
-            return path(trie.positions, current.position);
-        }
-        if (++steps % 100 == 0) {
-            cerr << steps << " " << trie.positions.size() << " " 
-                 << -current.score << " " << pos.level << "\n";
-        }
-        unsigned int next_level = pos.level + 1;
-        const Grid& next_grid = get_grid(grid_cache, next_level, yrange);
-        trie.positions[current.position].children = 0;
-        for (unsigned int d = 0; d < 4; d++) {
-            int jj = pos.y + directions[d].y;
-            int ii = pos.x + directions[d].x;
-            if (valid_coord(grid, jj, ii)) {
-                if (visited.check(jj, ii, next_level) or next_grid.get(jj,ii) == 1) {
-                    continue;
-                }
-                Position next_position{jj, ii, d, next_level, current.position, 0};
-                auto next_index = trie.push(next_position);
-                visited.set(jj, ii, next_level);
-                auto next_score = score(next_grid, next_position, grid.end);
-                next.push({next_score, next_index});
-                trie.positions[current.position].children++;
-            }
-        }
-        if (trie.positions[current.position].children == 0) {
-            trie.pop(current.position);
-        }
-    }
-    return "nope\n"s;
-}
 
 const Direction& get_dir(char mov) {
     for (auto& dir : directions) {

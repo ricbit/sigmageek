@@ -9,6 +9,7 @@
 #include <numeric>
 #include <algorithm>
 #include <execution>
+#include <unordered_map>
 
 using namespace std;
 using namespace std::execution;
@@ -27,7 +28,6 @@ struct Position {
     unsigned int level : 16;
     unsigned int prev;
     unsigned int children : 3;
-    unsigned int lives : 3;
 
     bool same(const Position& other) const {
         return this->x == other.x and this->y == other.y;
@@ -71,7 +71,7 @@ Grid read_input() {
     vector<bool> temp_grid(msize * msize, false);
     string line;
     int rows = 0, cols = 0;
-    Position start{0, 0, 0, 0, 0, 0, initial_lives}, end{0, 0, 0, 0, 0, 0, 0};
+    Position start{0, 0, 0, 0, 0, 0}, end{0, 0, 0, 0, 0, 0};
     for (;getline(cin, line); rows++) {
         trim_back(line);
         vector<uint8> row;
@@ -155,7 +155,7 @@ Grid iter_grid(const Grid& grid, const vector<int>& yrange) {
     auto slow = [&grid](int j, int i) { return transition(grid, j, i, valid_slow); };
     auto fast = [&grid](int j, int i) { return transition(grid, j, i, valid_fast); };
     iter_line(newgrid, 0, 0, grid.sx, slow);
-    for_each(std::execution::par, yrange.begin(), yrange.end(), [&grid, &newgrid, &slow, &fast](int j){
+    for_each(std::execution::par_unseq, yrange.begin(), yrange.end(), [&grid, &newgrid, &slow, &fast](int j){
         iter_line(newgrid, j, 0, 1, slow);
         iter_line(newgrid, j, 1, grid.sx - 1, fast);
         iter_line(newgrid, j, grid.sx - 1, grid.sx, slow);
@@ -240,19 +240,28 @@ struct BackTrie {
 struct VisitedPosition {
     int y : size_bits;
     int x : size_bits;
-    int level : 16;
-    unsigned int lives : 3;
+    unsigned int level : 16;
 
     auto operator<(const VisitedPosition& other) const {
-        return tie(y, x, level, lives) < tie(other.y, other.x, other.level, other.lives);
+        return tie(y, x, level) < tie(other.y, other.x, other.level);
+    }
+
+    auto operator==(const VisitedPosition& other) const {
+        return tie(y, x, level) == tie(other.y, other.x, other.level);
+    }
+};
+
+struct VisitedPositionHash {
+    auto operator()(const VisitedPosition& pos) const {
+        return std::hash<int>()(pos.y) ^ std::hash<int>()(pos.x) ^ std::hash<unsigned int>()(pos.level);
     }
 };
 
 struct VisitedQuads {
     VisitedQuads() {}
     
-    void set(int j, int i, int layer, unsigned int lives) {
-        auto key = VisitedPosition{j >> 6, i >> 6, layer, lives};
+    void set(int j, int i, unsigned int layer) {
+        auto key = VisitedPosition{j >> 6, i >> 6, layer};
         auto it = visited.find(key);
         if (it == visited.end()) {
             auto it_pair = visited.emplace(key, vector<bool>(64 * 64, false));
@@ -261,8 +270,8 @@ struct VisitedQuads {
         it->second[(j & 0x3F) * 64 + (i & 0x3F)] = true;
     }
 
-    bool check(int j, int i, int layer, unsigned int lives) {
-        auto key = VisitedPosition{j >> 6, i >> 6, layer, lives};
+    bool check(int j, int i, unsigned int layer) {
+        auto key = VisitedPosition{j >> 6, i >> 6, layer};
         auto it = visited.find(key);
         if (it == visited.end()) {
             return false;
@@ -270,31 +279,23 @@ struct VisitedQuads {
         return it->second[(j & 0x3F) * 64 + (i & 0x3F)];
     }
 
-    map<VisitedPosition, vector<bool>> visited;
+    unordered_map<VisitedPosition, vector<bool>, VisitedPositionHash> visited;
 };
-
-bool multi_check(VisitedQuads& visited, int jj, int ii, unsigned int level, unsigned int lives) {
-    for (int i = initial_lives; i >= static_cast<int>(lives); i--) {
-        if (visited.check(jj, ii, level, i)) {
-            return true;
-        }
-    }
-    return false;
-}
 
 int distance(const Position& pos, const Position& goal) {
     return abs(goal.x - pos.x) + abs(goal.y - pos.y);
 }
 
 bool block(const Position& pos, const Position& goal, int lag) {
-    return 
-        (pos.level < 500 + lag and pos.same(goal));
+    return pos.level < 49900 and pos.same(goal);
 }
 
 void trim_heap(priority_queue<Head>& next) {
-    if (next.size() > 50) {
+    unsigned int prune = 100;
+    unsigned int keep = 40;
+    if (next.size() > prune) {
         vector<Head> save;            
-        while (next.size() > 50 - 20) {
+        while (next.size() > prune - keep) {
             save.push_back(next.top());
             next.pop();
         }
@@ -313,7 +314,7 @@ vector<uint8> search(const Grid& grid, vector<Grid>& grid_cache, VisitedQuads& g
     lag_start.level = lag;
     BackTrie trie{lag_start};
     priority_queue<Head> next;
-    visited.set(lag_start.y, lag_start.x, 0, initial_lives);
+    visited.set(lag_start.y, lag_start.x, 0);
     next.push({score(grid, lag_start, grid.end), 0});
     vector<int> yrange(grid.sy - 2);
     iota(yrange.begin(), yrange.end(), 1);
@@ -338,15 +339,14 @@ vector<uint8> search(const Grid& grid, vector<Grid>& grid_cache, VisitedQuads& g
             int jj = pos.y + directions[d].y;
             int ii = pos.x + directions[d].x;
             if (valid_coord(grid, jj, ii) and !block(Position{jj, ii, d, next_level}, grid.end, lag)) {
-                unsigned int next_lives = pos.lives ? pos.lives - next_grid.get(jj, ii) : 0;
-                if (multi_check(visited, jj, ii, next_level, next_lives) 
-                    or global.check(jj, ii, next_level, next_lives)
-                    or (pos.lives == 0 and next_grid.get(jj, ii) == 1)) {
+                if (visited.check(jj, ii, next_level) 
+                    or global.check(jj, ii, next_level)
+                    or next_grid.get(jj, ii) == 1) {
                     continue;
                 }
-                Position next_position{jj, ii, d, next_level, current.position, 0, next_lives};
+                Position next_position{jj, ii, d, next_level, current.position, 0};
                 auto next_index = trie.push(next_position);
-                visited.set(jj, ii, next_level, next_lives);
+                visited.set(jj, ii, next_level);
                 auto next_score = score(next_grid, next_position, grid.end);
                 next.push({next_score, next_index});
                 trie.positions[current.position].children++;
@@ -365,29 +365,23 @@ int main() {
     vector<vector<uint8>> particles;
     int total = 0;
     VisitedQuads global;
-    for (int i = 0; i < 30; i++) {
-        particles.push_back(search(grid, grid_cache, global, i));
-        if (!particles.rbegin()->empty()) {
+    for (int i = 0; i < 40000; i++) {
+        particles.emplace_back(search(grid, grid_cache, global, i));
+        auto& current = *particles.rbegin();
+        if (!current.empty() && current.size() < 49999) {
             cerr << "total " << ++total << "\n";
-            auto& pp = *(particles.rbegin());
-                Position pos = grid.start;
-                for (int p = 0; p < static_cast<int>(pp.size()); p++) {
-                    global.set(pos.y, pos.x, p + i, 0);
-                    pos.y += directions[pp[p]].y;
-                    pos.x += directions[pp[p]].y;
-            }
-        }
-    }
-    for (int lag = 0; lag < static_cast<int>(particles.size()); lag++) {
-        if (!particles[lag].empty()) {
-            cout << lag << " ";
-            for (int p = 0; p < static_cast<int>(particles[lag].size()); p++) {
-                cout << directions[particles[lag][p]].name;
-                if (p < static_cast<int>(particles[lag].size()) - 1) {
+            cout << i << " ";
+            Position pos = grid.start;
+            for (int p = 0; p < static_cast<int>(current.size()); p++) {
+                global.set(pos.y, pos.x, p + i);
+                pos.y += directions[current[p]].y;
+                pos.x += directions[current[p]].x;
+                cout << directions[current[p]].name;
+                if (p < static_cast<int>(current.size()) - 1) {
                     cout << " ";
                 }
             }
-            cout << "\n";
+            cout << endl;
         }
     }
     return 0;

@@ -279,7 +279,7 @@ void collision(const vector<vector<Position>>& particles) {
             total++;
         }
     }
-    cerr << "Collisions: " << (total == static_cast<int>(unique.size())) << "\n";
+    cerr << "Collisions: " << (total - static_cast<int>(unique.size())) << "\n";
 }
 
 vector<vector<Position>> gen_positions(
